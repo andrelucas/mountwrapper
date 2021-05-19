@@ -192,6 +192,7 @@ int main(int argc, char* argv[]) {
     // fork(), then exec() in the child.
     //
 
+    int child_exit_code = EXIT_SUCCESS;
     auto cpid = fork();
     if (cpid == -1) {
         error_sys(errno, "fork() failed");
@@ -232,11 +233,16 @@ int main(int argc, char* argv[]) {
             } else {
                 ss << "exit with code " << ec;
             }
+            child_exit_code = ec;
+
         } else if (WIFSIGNALED(wstatus)) {
             int sig = WTERMSIG(wstatus);
             ss << "exit with signal " << sig;
+            child_exit_code = EXIT_FAILURE;
+
         } else {
             ss << "stopped with unknown status " << wstatus;
+            child_exit_code = EXIT_FAILURE;
         }
         Log(output, ss.str());
     }
@@ -264,6 +270,6 @@ int main(int argc, char* argv[]) {
             error_sys(errno, "Failed to write to log file");
         }
     }
-    (void)close(logfd);
-    return EXIT_SUCCESS;
+
+    return child_exit_code;
 }
