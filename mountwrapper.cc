@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -42,6 +43,8 @@
 #include <unistd.h>
 
 using namespace std::string_literals;
+
+namespace fs = std::filesystem;
 
 static constexpr char kLogFileEnvVar[] = "WRAPPER_OUTPUT";
 static constexpr char kDefaultOutputFile[] =
@@ -150,6 +153,14 @@ void Log(std::vector<std::string>& out, const std::string& str) {
     out.emplace_back(GetTimestamp() + " " + str);
 }
 
+// If something goes wrong, dump what we have to stdout so it's not entirely
+// lost.
+void PanicDump(const std::vector<std::string>& output) {
+    for (const auto& line : output) {
+        std::cout << line << "\n";
+    }
+}
+
 int main(int argc, char* argv[]) {
     std::vector<std::string> output{};
 
@@ -254,21 +265,41 @@ int main(int argc, char* argv[]) {
     // 'Regular output' means the wrapped program was successfully exec'd, but
     // doesn't necessarily mean it returned with a zero exit code.
 
-    // Use stdio.h so it's clear that we're using specific open flags.
-    int logfd = open(logfile.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
-    if (logfd == -1) {
-        error_sys(errno, "Failed to open log file");
-    }
+    std::error_code ec;
+    auto logdir = fs::path{logfile}.parent_path();
 
-    for (const auto& line : output) {
-        auto ret = write(logfd, line.c_str(), line.size());
-        if (ret != static_cast<ssize_t>(line.size())) {
-            error_sys(errno, "Failed to write to log file");
+    // fs::create_directories() returns failure if the directory already
+    // existed, so check the error code as well.
+
+    if (!fs::create_directories(logdir, ec) && ec) {
+        std::cerr << "Failed to create log directory " << logdir
+                  << ", will log to stdout: " << strerror(errno) << "\n";
+
+        PanicDump(output);
+        // Still want to clean up and exit with the child's exit code.
+
+    } else {
+        // Use stdio.h so it's clear that we're using specific open flags.
+        int logfd =
+            open(logfile.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
+        if (logfd == -1) {
+            PanicDump(output);
+            error_sys(errno, "Failed to open log file");
         }
-        ret = write(logfd, "\n", 1);
-        if (ret != 1) {
-            error_sys(errno, "Failed to write to log file");
+
+        for (const auto& line : output) {
+            auto ret = write(logfd, line.c_str(), line.size());
+            if (ret != static_cast<ssize_t>(line.size())) {
+                PanicDump(output);
+                error_sys(errno, "Failed to write to log file");
+            }
+            ret = write(logfd, "\n", 1);
+            if (ret != 1) {
+                PanicDump(output);
+                error_sys(errno, "Failed to write to log file");
+            }
         }
+        (void)close(logfd);
     }
 
     return child_exit_code;
